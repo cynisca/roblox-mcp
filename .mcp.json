@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "roblox-test": {
+      "command": "node",
+      "args": ["/Users/fahimzahur/roblox-mcp/roblox-test-mcp/dist/index.js"]
+    }
+  }
+}
