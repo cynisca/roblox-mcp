@@ -7,6 +7,7 @@ import {
 import { RobloxAutomation } from "./automation.js";
 import { captureScreenshot } from "./screenshot.js";
 import { ensureDirectories } from "./ipc.js";
+import { reloadPlugins } from "./ui-automation/plugin-reload.js";
 
 const server = new Server(
   { name: "roblox-test-automation", version: "1.0.0" },
@@ -79,6 +80,20 @@ const TOOLS = [
         setupScript: { type: "string", description: "Lua script to set up test" },
         testScript: { type: "string", description: "Lua script to run test" },
         waitSeconds: { type: "number", description: "Wait time before screenshot", default: 2 }
+      }
+    }
+  },
+  {
+    name: "roblox_reload_plugins",
+    description: "Reload Roblox Studio plugins by closing and reopening the current place file. Takes ~8-12 seconds. Use after updating plugin code.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        verify: {
+          type: "boolean",
+          description: "Wait for plugin to respond after reload (recommended)",
+          default: true
+        }
       }
     }
   }
@@ -190,6 +205,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         return { content: [{ type: "text", text: results.join("\n") + "\n\nScreenshot failed: " + screenshot.error }] };
+      }
+
+      case "roblox_reload_plugins": {
+        const typedArgs = args as { verify?: boolean } | undefined;
+        const result = await reloadPlugins({
+          verify: typedArgs?.verify ?? true,
+        });
+
+        return {
+          content: [{
+            type: "text",
+            text: result.success
+              ? `Plugins reloaded (${result.durationMs}ms)${result.placeFile ? ` - ${result.placeFile}` : ''}`
+              : `Reload failed: ${result.error}`
+          }]
+        };
       }
 
       default:
