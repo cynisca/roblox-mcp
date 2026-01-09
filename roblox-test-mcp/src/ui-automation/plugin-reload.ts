@@ -1,28 +1,27 @@
 /**
- * Plugin Reload via Studio Restart
+ * Plugin Reload via Close Place + Reopen Recent
  *
- * Since Roblox Studio has no "Reload Plugins" API, the only reliable way
- * to reload plugins is to close and reopen the place file.
+ * Reloads plugins by closing the current place and reopening it via File → Recent.
+ * Much faster than restarting Studio (~3-5s vs ~8-12s).
  */
 
 import { execSync } from 'child_process';
 import { runAppleScript } from './applescript.js';
 
 /**
- * Get the currently open place file path using lsof
+ * Focus Roblox Studio window
  */
-export async function getCurrentPlaceFile(): Promise<string | null> {
+async function focusStudio(): Promise<boolean> {
   try {
-    // Find open .rbxl/.rbxlx files by RobloxStudio process
-    const output = execSync(
-      'lsof -c RobloxStudio 2>/dev/null | grep -E "\\.(rbxl|rbxlx)$" | head -1 || true'
-    ).toString();
-
-    // Extract file path (everything from / to end of line)
-    const match = output.match(/\/.*\.rbxlx?$/m);
-    return match ? match[0].trim() : null;
+    await runAppleScript(`
+      tell application "RobloxStudio"
+        activate
+      end tell
+    `);
+    await new Promise(r => setTimeout(r, 200));
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -39,27 +38,76 @@ export async function isStudioRunningProcess(): Promise<boolean> {
 }
 
 /**
- * Wait for Studio to close
+ * Close current place via File → Close Place
  */
-async function waitForStudioClose(timeoutMs: number = 10000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (!(await isStudioRunningProcess())) return true;
+async function closePlace(): Promise<boolean> {
+  try {
+    await focusStudio();
+
+    await runAppleScript(`
+      tell application "System Events"
+        tell process "RobloxStudio"
+          -- Click File menu
+          click menu bar item "File" of menu bar 1
+          delay 0.2
+          -- Click Close Place
+          click menu item "Close Place" of menu "File" of menu bar 1
+        end tell
+      end tell
+    `);
+
+    // Wait a moment for potential save dialog
     await new Promise(r => setTimeout(r, 300));
+
+    // Try to dismiss save dialog if it appeared (click "Don't Save")
+    try {
+      await runAppleScript(`
+        tell application "System Events"
+          tell process "RobloxStudio"
+            if exists sheet 1 of front window then
+              click button "Don't Save" of sheet 1 of front window
+            end if
+          end tell
+        end tell
+      `);
+    } catch {
+      // No dialog, that's fine
+    }
+
+    return true;
+  } catch (e) {
+    console.error('[reload] Close place failed:', e);
+    return false;
   }
-  return false;
 }
 
 /**
- * Wait for Studio to open
+ * Open most recent place via File → Recent → (first item)
  */
-async function waitForStudioOpen(timeoutMs: number = 15000): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (await isStudioRunningProcess()) return true;
-    await new Promise(r => setTimeout(r, 300));
+async function openRecentPlace(): Promise<boolean> {
+  try {
+    await focusStudio();
+
+    await runAppleScript(`
+      tell application "System Events"
+        tell process "RobloxStudio"
+          -- Click File menu
+          click menu bar item "File" of menu bar 1
+          delay 0.2
+          -- Hover over Recent submenu
+          click menu item "Recent" of menu "File" of menu bar 1
+          delay 0.2
+          -- Click first item in Recent submenu
+          click menu item 1 of menu "Recent" of menu item "Recent" of menu "File" of menu bar 1
+        end tell
+      end tell
+    `);
+
+    return true;
+  } catch (e) {
+    console.error('[reload] Open recent failed:', e);
+    return false;
   }
-  return false;
 }
 
 /**
@@ -91,13 +139,12 @@ async function waitForPluginReady(timeoutMs: number = 10000): Promise<boolean> {
 
 export interface ReloadResult {
   success: boolean;
-  placeFile?: string;
   error?: string;
   durationMs: number;
 }
 
 /**
- * Main reload function - close and reopen Studio
+ * Main reload function - close place and reopen via Recent menu
  */
 export async function reloadPlugins(options: {
   verify?: boolean;        // Verify plugin responds after reload
@@ -106,81 +153,46 @@ export async function reloadPlugins(options: {
   const start = Date.now();
   const { verify = true, pingTimeout = 10000 } = options;
 
-  console.error('[reload] Starting plugin reload via restart...');
+  console.error('[reload] Starting plugin reload...');
 
-  // 1. Get current place file BEFORE closing
-  const placeFile = await getCurrentPlaceFile();
-  console.error(`[reload] Current place file: ${placeFile || 'none found'}`);
-
-  // 2. Quit Studio
-  console.error('[reload] Closing Roblox Studio...');
-  try {
-    await runAppleScript(`
-      tell application "RobloxStudio"
-        quit saving no
-      end tell
-    `);
-  } catch (e) {
-    // May fail if Studio is unresponsive, try force quit
-    console.error('[reload] Gentle quit failed, trying force quit...');
-    try {
-      execSync('pkill -9 RobloxStudio || true');
-    } catch {
-      // Ignore
-    }
+  // Check Studio is running
+  if (!(await isStudioRunningProcess())) {
+    return {
+      success: false,
+      error: 'Roblox Studio is not running',
+      durationMs: Date.now() - start
+    };
   }
 
-  // 3. Wait for Studio to fully close
-  const closed = await waitForStudioClose(10000);
+  // 1. Close Place
+  console.error('[reload] Closing place (File → Close Place)...');
+  const closed = await closePlace();
   if (!closed) {
     return {
       success: false,
-      error: 'Timed out waiting for Studio to close',
+      error: 'Failed to close place via menu',
       durationMs: Date.now() - start
     };
   }
-  console.error('[reload] Studio closed');
 
-  // Extra buffer for cleanup
+  // Wait for place to close
   await new Promise(r => setTimeout(r, 500));
 
-  // 4. Reopen Studio with the place file
-  console.error('[reload] Reopening Studio...');
-  try {
-    if (placeFile) {
-      const escapedPath = placeFile.replace(/'/g, "'\\''");
-      await runAppleScript(`do shell script "open -a 'Roblox Studio' '${escapedPath}'"`);
-    } else {
-      await runAppleScript(`
-        tell application "RobloxStudio"
-          activate
-        end tell
-      `);
-    }
-  } catch (e) {
-    return {
-      success: false,
-      error: `Failed to reopen Studio: ${e}`,
-      durationMs: Date.now() - start
-    };
-  }
-
-  // 5. Wait for Studio to open
-  const opened = await waitForStudioOpen(15000);
+  // 2. Open Recent
+  console.error('[reload] Opening recent place (File → Recent → first item)...');
+  const opened = await openRecentPlace();
   if (!opened) {
     return {
       success: false,
-      error: 'Timed out waiting for Studio to open',
-      placeFile: placeFile || undefined,
+      error: 'Failed to open recent place via menu',
       durationMs: Date.now() - start
     };
   }
-  console.error('[reload] Studio opened');
 
-  // 6. Wait for place to load (extra time)
-  await new Promise(r => setTimeout(r, 3000));
+  // Wait for place to load
+  await new Promise(r => setTimeout(r, 2000));
 
-  // 7. Verify plugin is responding
+  // 3. Verify plugin is responding
   if (verify) {
     console.error('[reload] Waiting for plugin to respond...');
     const pluginReady = await waitForPluginReady(pingTimeout);
@@ -188,8 +200,7 @@ export async function reloadPlugins(options: {
     if (!pluginReady) {
       return {
         success: false,
-        error: 'Studio restarted but plugin not responding. Check: 1) Plugin installed, 2) HTTP enabled in Game Settings',
-        placeFile: placeFile || undefined,
+        error: 'Place reopened but plugin not responding. Check: 1) Plugin installed, 2) HTTP enabled in Game Settings',
         durationMs: Date.now() - start
       };
     }
@@ -201,7 +212,21 @@ export async function reloadPlugins(options: {
 
   return {
     success: true,
-    placeFile: placeFile || undefined,
     durationMs: duration
   };
+}
+
+/**
+ * Legacy function - kept for compatibility but not used
+ */
+export async function getCurrentPlaceFile(): Promise<string | null> {
+  try {
+    const output = execSync(
+      'lsof -c RobloxStudio 2>/dev/null | grep -E "\\.(rbxl|rbxlx)$" | head -1 || true'
+    ).toString();
+    const match = output.match(/\/.*\.rbxlx?$/m);
+    return match ? match[0].trim() : null;
+  } catch {
+    return null;
+  }
 }

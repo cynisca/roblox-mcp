@@ -85,7 +85,7 @@ const TOOLS = [
   },
   {
     name: "roblox_reload_plugins",
-    description: "Reload Roblox Studio plugins by closing and reopening the current place file. Takes ~8-12 seconds. Use after updating plugin code.",
+    description: "Reload Roblox Studio plugins by closing and reopening the current place via File menu. Takes ~3-5 seconds. Use after updating plugin code.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -217,7 +217,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{
             type: "text",
             text: result.success
-              ? `Plugins reloaded (${result.durationMs}ms)${result.placeFile ? ` - ${result.placeFile}` : ''}`
+              ? `Plugins reloaded (${result.durationMs}ms)`
               : `Reload failed: ${result.error}`
           }]
         };
