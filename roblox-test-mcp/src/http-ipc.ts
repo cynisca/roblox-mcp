@@ -2,6 +2,7 @@ import http from 'http';
 import { v4 as uuidv4 } from 'uuid';
 
 const PORT = 28859; // Arbitrary port for Roblox plugin communication
+const DEBUG = true; // Enable debug logging
 
 export interface Command {
   id: string;
@@ -24,6 +25,12 @@ const responseCallbacks: Map<string, (response: Response) => void> = new Map();
 
 let server: http.Server | null = null;
 
+function debug(msg: string) {
+  if (DEBUG) {
+    console.error(`[HTTP-IPC] ${msg}`);
+  }
+}
+
 export function startHttpServer(): Promise<void> {
   return new Promise((resolve, reject) => {
     if (server) {
@@ -44,12 +51,14 @@ export function startHttpServer(): Promise<void> {
       }
 
       const url = new URL(req.url || '/', `http://localhost:${PORT}`);
+      debug(`${req.method} ${url.pathname}`);
 
       // GET /command - Plugin polls for pending commands
       if (req.method === 'GET' && url.pathname === '/command') {
         if (pendingCommand) {
           const cmd = pendingCommand;
           pendingCommand = null; // Clear after sending
+          debug(`Sending command: ${cmd.action} (id: ${cmd.id})`);
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(cmd));
         } else {
@@ -61,23 +70,45 @@ export function startHttpServer(): Promise<void> {
 
       // POST /response - Plugin sends responses
       if (req.method === 'POST' && url.pathname === '/response') {
-        let body = '';
-        req.on('data', chunk => { body += chunk; });
+        const chunks: Buffer[] = [];
+
+        req.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+
         req.on('end', () => {
           try {
+            const body = Buffer.concat(chunks).toString('utf8');
+            debug(`Received response body: ${body.substring(0, 200)}...`);
+
             const response: Response = JSON.parse(body);
+            debug(`Parsed response - id: ${response.id}, success: ${response.success}`);
+
             const callback = responseCallbacks.get(response.id);
+            debug(`Looking for callback with id ${response.id}, found: ${callback !== undefined}`);
+            debug(`Pending callbacks: ${Array.from(responseCallbacks.keys()).join(', ')}`);
+
             if (callback) {
+              debug(`Calling callback for ${response.id}`);
               callback(response);
               responseCallbacks.delete(response.id);
+            } else {
+              debug(`No callback found for response id: ${response.id}`);
             }
+
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ received: true }));
           } catch (e) {
+            debug(`Error parsing response: ${e}`);
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Invalid JSON' }));
+            res.end(JSON.stringify({ error: 'Invalid JSON', details: String(e) }));
           }
         });
+
+        req.on('error', (e) => {
+          debug(`Request error: ${e}`);
+        });
+
         return;
       }
 
@@ -95,6 +126,18 @@ export function startHttpServer(): Promise<void> {
           status: 'running',
           pendingCommand: pendingCommand !== null,
           pendingResponses: responseCallbacks.size,
+          pendingIds: Array.from(responseCallbacks.keys()),
+          timestamp: Date.now()
+        }));
+        return;
+      }
+
+      // GET /debug - Show recent activity
+      if (req.method === 'GET' && url.pathname === '/debug') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          pendingCommand,
+          pendingCallbacks: Array.from(responseCallbacks.keys()),
           timestamp: Date.now()
         }));
         return;
@@ -145,18 +188,22 @@ export async function sendCommandHttp(
     timestamp: Date.now(),
   };
 
+  debug(`Queueing command: ${action} (id: ${command.id})`);
+
   // Set the pending command
   pendingCommand = command;
 
   // Wait for response
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
+      debug(`Timeout for command ${command.id}`);
       responseCallbacks.delete(command.id);
       pendingCommand = null;
       reject(new Error(`Timeout waiting for response to command ${command.id}`));
     }, timeout);
 
     responseCallbacks.set(command.id, (response) => {
+      debug(`Received response for ${command.id}`);
       clearTimeout(timer);
       resolve(response);
     });

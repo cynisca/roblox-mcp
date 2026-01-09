@@ -18,6 +18,7 @@ local Config = {
     REQUEST_TIMEOUT = 5,
     MAX_COMMAND_AGE = 30,
     LOG_ENABLED = true,
+    DEBUG_ENABLED = true,  -- Extra debug logging
     LOG_PREFIX = "[RobloxTestAutomation]"
 }
 
@@ -36,6 +37,11 @@ function IPC.log(message)
     print(Config.LOG_PREFIX .. " " .. message)
 end
 
+function IPC.debug(message)
+    if not Config.DEBUG_ENABLED then return end
+    print(Config.LOG_PREFIX .. " [DEBUG] " .. message)
+end
+
 function IPC.warn(message)
     if not Config.LOG_ENABLED then return end
     warn(Config.LOG_PREFIX .. " " .. message)
@@ -46,15 +52,24 @@ function IPC.readCommand()
         return nil
     end
 
+    IPC.debug("Polling GET " .. Config.COMMAND_URL)
+
     local success, result = pcall(function()
         local response = HttpService:GetAsync(Config.COMMAND_URL)
+        IPC.debug("GET response length: " .. tostring(response and #response or 0))
         if response and response ~= "" then
+            IPC.debug("GET /command returned: " .. response:sub(1, 100))
             return HttpService:JSONDecode(response)
         end
         return nil
     end)
 
-    if success and result then
+    if not success then
+        IPC.warn("GET /command failed: " .. tostring(result))
+        return nil
+    end
+
+    if result then
         local now = os.time() * 1000
         local age = (now - (result.timestamp or 0)) / 1000
         if age > Config.MAX_COMMAND_AGE then
@@ -74,17 +89,27 @@ function IPC.writeResponse(response)
 
     response.timestamp = os.time() * 1000
 
-    local success, err = pcall(function()
-        local json = HttpService:JSONEncode(response)
-        HttpService:PostAsync(Config.RESPONSE_URL, json, Enum.HttpContentType.ApplicationJson)
+    local json = HttpService:JSONEncode(response)
+    IPC.debug("Sending response: " .. json:sub(1, 200))
+    IPC.debug("POST URL: " .. Config.RESPONSE_URL)
+
+    local success, result = pcall(function()
+        local httpResponse = HttpService:PostAsync(
+            Config.RESPONSE_URL,
+            json,
+            Enum.HttpContentType.ApplicationJson,
+            false  -- compress
+        )
+        return httpResponse
     end)
 
-    if not success then
-        IPC.warn("Error sending response: " .. tostring(err))
+    if success then
+        IPC.debug("POST response: " .. tostring(result))
+        return true
+    else
+        IPC.warn("Error sending response: " .. tostring(result))
         return false
     end
-
-    return true
 end
 
 function IPC.checkConnection()
@@ -211,6 +236,7 @@ function Commands.handle(command)
 
     if success then
         result.id = command.id
+        IPC.debug("Command result - id: " .. tostring(result.id) .. ", success: " .. tostring(result.success))
         return result
     else
         return {
@@ -265,6 +291,7 @@ spawn(function()
         if command then
             IPC.log("Received command: " .. command.action)
             local response = Commands.handle(command)
+            IPC.debug("About to send response with id: " .. tostring(response.id))
             local sent = IPC.writeResponse(response)
             if sent then
                 IPC.log("Response sent for: " .. command.action)
@@ -297,6 +324,26 @@ statusButton.Click:Connect(function()
         IPC.warn("Make sure MCP server is running and HTTP requests are enabled")
     end
     IPC.log("===================")
+end)
+
+-- Test button for manual response test
+local testButton = toolbar:CreateButton(
+    "Test POST",
+    "Send a test POST request",
+    "rbxassetid://0"
+)
+
+testButton.Click:Connect(function()
+    IPC.log("=== Manual POST Test ===")
+    local testResponse = {
+        id = "manual-test-" .. tostring(os.time()),
+        success = true,
+        result = "manual test",
+        timestamp = os.time() * 1000
+    }
+    local sent = IPC.writeResponse(testResponse)
+    IPC.log("POST test result: " .. tostring(sent))
+    IPC.log("========================")
 end)
 
 IPC.log("Plugin initialized - polling for commands")
