@@ -1,79 +1,153 @@
 --[[
-    RobloxTestAutomation Plugin
-    Enables automated testing of Roblox games via MCP server
-    macOS Version - HTTP-based IPC (Single File)
+    RobloxTestAutomation Plugin v2
+    Self-healing, auto-configuring, context-aware
+
+    Features:
+    - Auto-enables HTTP requests and LoadStringEnabled
+    - Context-aware command routing (Edit/Server/Client)
+    - Diagnostics endpoint for troubleshooting
+    - Debug logging
 ]]
 
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
+local Players = game:GetService("Players")
 
 --------------------------------------------------------------------------------
--- CONFIG
+-- CONFIGURATION
 --------------------------------------------------------------------------------
 local Config = {
-    HTTP_ENABLED = true,
-    HTTP_HOST = "http://127.0.0.1",
-    HTTP_PORT = 28859,
+    SERVER_URL = "http://127.0.0.1:28859",
     POLL_INTERVAL = 0.1,
     REQUEST_TIMEOUT = 5,
     MAX_COMMAND_AGE = 30,
-    LOG_ENABLED = true,
-    DEBUG_ENABLED = true,  -- Extra debug logging
-    LOG_PREFIX = "[RobloxTestAutomation]"
+    DEBUG = false,  -- Set to true for verbose logging
 }
 
-Config.HTTP_BASE_URL = Config.HTTP_HOST .. ":" .. Config.HTTP_PORT
-Config.COMMAND_URL = Config.HTTP_BASE_URL .. "/command"
-Config.RESPONSE_URL = Config.HTTP_BASE_URL .. "/response"
-Config.PING_URL = Config.HTTP_BASE_URL .. "/ping"
+Config.COMMAND_URL = Config.SERVER_URL .. "/command"
+Config.RESPONSE_URL = Config.SERVER_URL .. "/response"
+Config.PING_URL = Config.SERVER_URL .. "/ping"
+
+--------------------------------------------------------------------------------
+-- CONTEXT DETECTION
+--------------------------------------------------------------------------------
+local Context = {
+    suffix = "",
+    isEdit = false,
+    isServer = false,
+    isClient = false,
+}
+
+-- Determine which context we're running in
+if RunService:IsEdit() then
+    Context.suffix = "Edit"
+    Context.isEdit = true
+elseif RunService:IsServer() and not RunService:IsClient() then
+    Context.suffix = "Server"
+    Context.isServer = true
+elseif RunService:IsClient() then
+    Context.suffix = "Client"
+    Context.isClient = true
+else
+    Context.suffix = "Unknown"
+end
+
+--------------------------------------------------------------------------------
+-- LOGGING
+--------------------------------------------------------------------------------
+local function log(message)
+    print(string.format("[RTA-%s] %s", Context.suffix, message))
+end
+
+local function debug(message)
+    if Config.DEBUG then
+        print(string.format("[RTA-%s] [DEBUG] %s", Context.suffix, message))
+    end
+end
+
+local function warn(message)
+    warn(string.format("[RTA-%s] %s", Context.suffix, message))
+end
+
+--------------------------------------------------------------------------------
+-- SELF-HEALING: AUTO-CONFIGURE SETTINGS
+--------------------------------------------------------------------------------
+local ConfigurationIssues = {}
+
+local function autoConfigureSettings()
+    ConfigurationIssues = {}
+
+    -- 1. Enable HTTP (required for IPC)
+    -- Note: This can only be changed in Edit mode by plugins
+    if Context.isEdit then
+        local httpSuccess = pcall(function()
+            if not HttpService.HttpEnabled then
+                HttpService.HttpEnabled = true
+                log("Auto-enabled HttpService.HttpEnabled")
+            end
+        end)
+        if not httpSuccess then
+            table.insert(ConfigurationIssues, "HTTP_ENABLE_FAILED")
+        end
+    end
+
+    -- Check if HTTP is enabled
+    if not HttpService.HttpEnabled then
+        table.insert(ConfigurationIssues, "HTTP_DISABLED")
+    end
+
+    -- 2. Enable LoadString (required for script execution)
+    -- Only in Edit mode as this is a saved property
+    if Context.isEdit then
+        local loadstringSuccess = pcall(function()
+            if not ServerScriptService.LoadStringEnabled then
+                ServerScriptService.LoadStringEnabled = true
+                log("Auto-enabled ServerScriptService.LoadStringEnabled")
+            end
+        end)
+        if not loadstringSuccess then
+            table.insert(ConfigurationIssues, "LOADSTRING_ENABLE_FAILED")
+        end
+    end
+
+    -- Check if LoadString is enabled
+    if not ServerScriptService.LoadStringEnabled then
+        table.insert(ConfigurationIssues, "LOADSTRING_DISABLED")
+    end
+
+    return ConfigurationIssues
+end
 
 --------------------------------------------------------------------------------
 -- IPC (HTTP-based)
 --------------------------------------------------------------------------------
 local IPC = {}
 
-function IPC.log(message)
-    if not Config.LOG_ENABLED then return end
-    print(Config.LOG_PREFIX .. " " .. message)
-end
-
-function IPC.debug(message)
-    if not Config.DEBUG_ENABLED then return end
-    print(Config.LOG_PREFIX .. " [DEBUG] " .. message)
-end
-
-function IPC.warn(message)
-    if not Config.LOG_ENABLED then return end
-    warn(Config.LOG_PREFIX .. " " .. message)
-end
-
 function IPC.readCommand()
-    if not Config.HTTP_ENABLED then
-        return nil
-    end
-
-    IPC.debug("Polling GET " .. Config.COMMAND_URL)
-
     local success, result = pcall(function()
         local response = HttpService:GetAsync(Config.COMMAND_URL)
-        IPC.debug("GET response length: " .. tostring(response and #response or 0))
         if response and response ~= "" then
-            IPC.debug("GET /command returned: " .. response:sub(1, 100))
+            debug("Received command: " .. response:sub(1, 100))
             return HttpService:JSONDecode(response)
         end
         return nil
     end)
 
     if not success then
-        IPC.warn("GET /command failed: " .. tostring(result))
+        -- Only log errors occasionally to avoid spam
+        if math.random() < 0.01 then
+            debug("GET /command error: " .. tostring(result))
+        end
         return nil
     end
 
     if result then
+        -- Check command age
         local now = os.time() * 1000
         local age = (now - (result.timestamp or 0)) / 1000
         if age > Config.MAX_COMMAND_AGE then
-            IPC.log("Ignoring stale command: " .. (result.id or "unknown"))
+            log("Ignoring stale command: " .. (result.id or "unknown"))
             return nil
         end
         return result
@@ -83,31 +157,26 @@ function IPC.readCommand()
 end
 
 function IPC.writeResponse(response)
-    if not Config.HTTP_ENABLED then
-        return false
-    end
-
     response.timestamp = os.time() * 1000
+    response.context = Context.suffix
 
     local json = HttpService:JSONEncode(response)
-    IPC.debug("Sending response: " .. json:sub(1, 200))
-    IPC.debug("POST URL: " .. Config.RESPONSE_URL)
+    debug("Sending response: " .. json:sub(1, 200))
 
     local success, result = pcall(function()
-        local httpResponse = HttpService:PostAsync(
+        return HttpService:PostAsync(
             Config.RESPONSE_URL,
             json,
             Enum.HttpContentType.ApplicationJson,
-            false  -- compress
+            false
         )
-        return httpResponse
     end)
 
     if success then
-        IPC.debug("POST response: " .. tostring(result))
+        debug("Response sent successfully")
         return true
     else
-        IPC.warn("Error sending response: " .. tostring(result))
+        warn("Failed to send response: " .. tostring(result))
         return false
     end
 end
@@ -121,17 +190,34 @@ function IPC.checkConnection()
         end
         return false
     end)
-
     return success and result
 end
 
 --------------------------------------------------------------------------------
--- COMMANDS
+-- COMMAND HANDLERS
 --------------------------------------------------------------------------------
 local Commands = {}
 
 function Commands.ping(payload)
     return { success = true, result = "pong" }
+end
+
+function Commands.diagnostics(payload)
+    return {
+        success = true,
+        result = {
+            context = Context.suffix,
+            isEdit = Context.isEdit,
+            isServer = Context.isServer,
+            isClient = Context.isClient,
+            isRunning = RunService:IsRunning(),
+            httpEnabled = HttpService.HttpEnabled,
+            loadStringEnabled = ServerScriptService.LoadStringEnabled,
+            issues = ConfigurationIssues,
+            playerCount = #Players:GetPlayers(),
+            timestamp = os.time(),
+        }
+    }
 end
 
 function Commands.getState(payload)
@@ -141,6 +227,9 @@ function Commands.getState(payload)
             isPlaying = RunService:IsRunning(),
             isStudio = RunService:IsStudio(),
             isEdit = RunService:IsEdit(),
+            isServer = RunService:IsServer(),
+            isClient = RunService:IsClient(),
+            context = Context.suffix,
         }
     }
 end
@@ -150,6 +239,16 @@ function Commands.execute(payload)
         return { success = false, error = "No script provided" }
     end
 
+    -- Check if loadstring is available
+    if not loadstring then
+        return {
+            success = false,
+            error = "loadstring not available in this context",
+            hint = "Enable ServerScriptService.LoadStringEnabled"
+        }
+    end
+
+    -- Build execution environment
     local env = setmetatable({
         game = game,
         workspace = workspace,
@@ -190,7 +289,12 @@ function Commands.execute(payload)
         time = time,
         os = os,
         coroutine = coroutine,
+        -- Game services
+        Players = Players,
+        player = Players.LocalPlayer,
     }, { __index = getfenv() })
+
+    debug("Executing script (length: " .. #payload.script .. ")")
 
     local fn, parseErr = loadstring(payload.script)
     if not fn then
@@ -202,15 +306,13 @@ function Commands.execute(payload)
     local success, result = pcall(fn)
 
     if success then
-        -- Try to serialize the result
+        -- Serialize result
         local serializedResult = result
         if type(result) == "userdata" or type(result) == "function" then
             serializedResult = tostring(result)
         elseif type(result) == "table" then
             local ok, json = pcall(function() return HttpService:JSONEncode(result) end)
-            if ok then
-                serializedResult = result
-            else
+            if not ok then
                 serializedResult = tostring(result)
             end
         end
@@ -220,8 +322,65 @@ function Commands.execute(payload)
     end
 end
 
-function Commands.handle(command)
-    IPC.log("Handling command: " .. command.action .. " (id: " .. (command.id or "?") .. ")")
+--------------------------------------------------------------------------------
+-- CONTEXT-AWARE COMMAND ROUTING
+--------------------------------------------------------------------------------
+
+-- Commands that should only run in Edit context
+local EDIT_ONLY_COMMANDS = {
+    reload = true,
+    savePlace = true,
+}
+
+-- Commands that prefer Server context during play mode
+local SERVER_PREFERRED_COMMANDS = {
+    execute = true,
+}
+
+-- Commands that any context can handle
+local ANY_CONTEXT_COMMANDS = {
+    ping = true,
+    diagnostics = true,
+    getState = true,
+}
+
+local function shouldHandleCommand(command)
+    local action = command.action
+
+    -- Any context commands
+    if ANY_CONTEXT_COMMANDS[action] then
+        -- In Edit mode, let Edit handle it
+        -- In Play mode, let Server handle it (avoid duplicate responses)
+        if RunService:IsRunning() then
+            return Context.isServer
+        else
+            return Context.isEdit
+        end
+    end
+
+    -- Edit-only commands
+    if EDIT_ONLY_COMMANDS[action] then
+        return Context.isEdit
+    end
+
+    -- Server-preferred commands (during play mode)
+    if SERVER_PREFERRED_COMMANDS[action] and RunService:IsRunning() then
+        return Context.isServer
+    end
+
+    -- Default: Edit handles in edit mode, Server handles in play mode
+    if RunService:IsRunning() then
+        return Context.isServer
+    else
+        return Context.isEdit
+    end
+end
+
+--------------------------------------------------------------------------------
+-- COMMAND DISPATCHER
+--------------------------------------------------------------------------------
+local function handleCommand(command)
+    log("Handling command: " .. command.action .. " (id: " .. (command.id or "?") .. ")")
 
     local handler = Commands[command.action]
     if not handler then
@@ -236,7 +395,6 @@ function Commands.handle(command)
 
     if success then
         result.id = command.id
-        IPC.debug("Command result - id: " .. tostring(result.id) .. ", success: " .. tostring(result.success))
         return result
     else
         return {
@@ -248,55 +406,41 @@ function Commands.handle(command)
 end
 
 --------------------------------------------------------------------------------
--- MAIN PLUGIN
+-- MAIN PLUGIN INITIALIZATION
 --------------------------------------------------------------------------------
-IPC.log("Plugin loaded - HTTP IPC mode")
-IPC.log("Server URL: " .. Config.HTTP_BASE_URL)
+log("Plugin loading...")
 
-local isConnected = false
-local lastConnectionCheck = 0
-local CONNECTION_CHECK_INTERVAL = 5
+-- Auto-configure settings
+local issues = autoConfigureSettings()
+if #issues > 0 then
+    warn("Configuration issues: " .. table.concat(issues, ", "))
+    warn("Some features may not work correctly.")
+end
 
-local function checkConnection()
-    local now = os.time()
-    if now - lastConnectionCheck >= CONNECTION_CHECK_INTERVAL then
-        lastConnectionCheck = now
-        local wasConnected = isConnected
-        isConnected = IPC.checkConnection()
-
-        if isConnected and not wasConnected then
-            IPC.log("Connected to MCP server")
-        elseif not isConnected and wasConnected then
-            IPC.warn("Lost connection to MCP server")
-        end
-    end
-    return isConnected
+-- Check initial connection
+local connected = IPC.checkConnection()
+if connected then
+    log("Connected to MCP server")
+else
+    log("MCP server not available - will retry")
 end
 
 -- Main polling loop
 spawn(function()
-    IPC.log("Checking connection to MCP server...")
-    isConnected = IPC.checkConnection()
-    if isConnected then
-        IPC.log("Connected to MCP server!")
-    else
-        IPC.warn("MCP server not available at " .. Config.HTTP_BASE_URL .. " - will retry")
-    end
+    local lastConnectionWarning = 0
 
     while true do
-        checkConnection()
-
+        -- Only poll if we should handle commands in this context
         local command = IPC.readCommand()
 
         if command then
-            IPC.log("Received command: " .. command.action)
-            local response = Commands.handle(command)
-            IPC.debug("About to send response with id: " .. tostring(response.id))
-            local sent = IPC.writeResponse(response)
-            if sent then
-                IPC.log("Response sent for: " .. command.action)
+            if shouldHandleCommand(command) then
+                debug("Processing command: " .. command.action)
+                local response = handleCommand(command)
+                IPC.writeResponse(response)
+                log("Completed: " .. command.action)
             else
-                IPC.warn("Failed to send response for: " .. command.action)
+                debug("Skipping command (wrong context): " .. command.action)
             end
         end
 
@@ -304,46 +448,47 @@ spawn(function()
     end
 end)
 
--- Create toolbar
-local toolbar = plugin:CreateToolbar("Test Automation")
-local statusButton = toolbar:CreateButton(
-    "Status",
-    "Check connection to MCP server",
-    "rbxassetid://0"
-)
+-- Create toolbar UI (only in Edit mode where plugin UI works)
+if Context.isEdit and plugin then
+    local toolbar = plugin:CreateToolbar("Test Automation")
 
-statusButton.Click:Connect(function()
-    IPC.log("=== Status Check ===")
-    IPC.log("HTTP URL: " .. Config.HTTP_BASE_URL)
+    local statusButton = toolbar:CreateButton(
+        "Status",
+        "Check connection and configuration",
+        "rbxassetid://0"
+    )
 
-    local connected = IPC.checkConnection()
-    if connected then
-        IPC.log("Connection: OK")
-    else
-        IPC.warn("Connection: FAILED")
-        IPC.warn("Make sure MCP server is running and HTTP requests are enabled")
-    end
-    IPC.log("===================")
-end)
+    statusButton.Click:Connect(function()
+        log("=== Status Check ===")
+        log("Context: " .. Context.suffix)
+        log("HTTP Enabled: " .. tostring(HttpService.HttpEnabled))
+        log("LoadString Enabled: " .. tostring(ServerScriptService.LoadStringEnabled))
 
--- Test button for manual response test
-local testButton = toolbar:CreateButton(
-    "Test POST",
-    "Send a test POST request",
-    "rbxassetid://0"
-)
+        local connected = IPC.checkConnection()
+        if connected then
+            log("MCP Server: Connected")
+        else
+            warn("MCP Server: Not connected")
+        end
 
-testButton.Click:Connect(function()
-    IPC.log("=== Manual POST Test ===")
-    local testResponse = {
-        id = "manual-test-" .. tostring(os.time()),
-        success = true,
-        result = "manual test",
-        timestamp = os.time() * 1000
-    }
-    local sent = IPC.writeResponse(testResponse)
-    IPC.log("POST test result: " .. tostring(sent))
-    IPC.log("========================")
-end)
+        if #ConfigurationIssues > 0 then
+            warn("Issues: " .. table.concat(ConfigurationIssues, ", "))
+        else
+            log("No configuration issues")
+        end
+        log("====================")
+    end)
 
-IPC.log("Plugin initialized - polling for commands")
+    local debugButton = toolbar:CreateButton(
+        "Toggle Debug",
+        "Toggle debug logging",
+        "rbxassetid://0"
+    )
+
+    debugButton.Click:Connect(function()
+        Config.DEBUG = not Config.DEBUG
+        log("Debug logging: " .. (Config.DEBUG and "ON" or "OFF"))
+    end)
+end
+
+log("Plugin initialized - context: " .. Context.suffix)
