@@ -97,23 +97,13 @@ local function autoConfigureSettings()
         table.insert(ConfigurationIssues, "HTTP_DISABLED")
     end
 
-    -- 2. Enable LoadString (required for script execution)
-    -- Only in Edit mode as this is a saved property
-    if Context.isEdit then
-        local loadstringSuccess = pcall(function()
-            if not ServerScriptService.LoadStringEnabled then
-                ServerScriptService.LoadStringEnabled = true
-                log("Auto-enabled ServerScriptService.LoadStringEnabled")
-            end
-        end)
-        if not loadstringSuccess then
-            table.insert(ConfigurationIssues, "LOADSTRING_ENABLE_FAILED")
-        end
-    end
-
-    -- Check if LoadString is enabled
-    if not ServerScriptService.LoadStringEnabled then
-        table.insert(ConfigurationIssues, "LOADSTRING_DISABLED")
+    -- 2. Check LoadString availability
+    -- Note: LoadStringEnabled property is not scriptable, can only be set via Properties panel
+    -- We detect if loadstring works by testing it
+    local loadstringAvailable = loadstring ~= nil
+    if not loadstringAvailable then
+        table.insert(ConfigurationIssues, "LOADSTRING_UNAVAILABLE")
+        log("WARNING: loadstring not available - enable ServerScriptService.LoadStringEnabled in Properties")
     end
 
     return ConfigurationIssues
@@ -212,7 +202,7 @@ function Commands.diagnostics(payload)
             isClient = Context.isClient,
             isRunning = RunService:IsRunning(),
             httpEnabled = HttpService.HttpEnabled,
-            loadStringEnabled = ServerScriptService.LoadStringEnabled,
+            loadStringAvailable = loadstring ~= nil,
             issues = ConfigurationIssues,
             playerCount = #Players:GetPlayers(),
             timestamp = os.time(),
@@ -462,7 +452,7 @@ if Context.isEdit and plugin then
         log("=== Status Check ===")
         log("Context: " .. Context.suffix)
         log("HTTP Enabled: " .. tostring(HttpService.HttpEnabled))
-        log("LoadString Enabled: " .. tostring(ServerScriptService.LoadStringEnabled))
+        log("LoadString Available: " .. tostring(loadstring ~= nil))
 
         local connected = IPC.checkConnection()
         if connected then

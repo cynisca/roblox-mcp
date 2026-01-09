@@ -23,7 +23,7 @@ export interface AutomationState {
   pluginResponding: boolean;
   isPlaying: boolean;
   httpEnabled: boolean;
-  loadStringEnabled: boolean;
+  loadStringAvailable: boolean;
   issues: string[];
   context: string;
   lastCheck: number;
@@ -36,7 +36,7 @@ export interface DiagnosticsResult {
   isClient: boolean;
   isRunning: boolean;
   httpEnabled: boolean;
-  loadStringEnabled: boolean;
+  loadStringAvailable: boolean;
   issues: string[];
   playerCount: number;
   timestamp: number;
@@ -67,7 +67,7 @@ export class RobloxAutomation {
       pluginResponding: false,
       isPlaying: false,
       httpEnabled: false,
-      loadStringEnabled: false,
+      loadStringAvailable: false,
       issues: [],
       context: 'unknown',
       lastCheck: 0,
@@ -133,7 +133,7 @@ export class RobloxAutomation {
         this.state.pluginResponding = true;
         this.state.isPlaying = diag.isRunning;
         this.state.httpEnabled = diag.httpEnabled;
-        this.state.loadStringEnabled = diag.loadStringEnabled;
+        this.state.loadStringAvailable = diag.loadStringAvailable;
         this.state.issues = diag.issues || [];
         this.state.context = diag.context;
       } else {
