@@ -16,7 +16,7 @@ const server = new Server(
 
 const automation = new RobloxAutomation();
 
-// Tool definitions
+// Optimized tool definitions - minimal descriptions to reduce token usage
 const TOOLS = [
   {
     name: "roblox_play",
@@ -99,6 +99,17 @@ const TOOLS = [
   }
 ];
 
+// Helper to create minimal success response
+function ok(data?: Record<string, unknown>): { content: Array<{ type: "text"; text: string }> } {
+  if (!data) return { content: [{ type: "text", text: '{"success":true}' }] };
+  return { content: [{ type: "text", text: JSON.stringify({ success: true, ...data }) }] };
+}
+
+// Helper to create minimal error response
+function err(message: string): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  return { content: [{ type: "text", text: JSON.stringify({ success: false, error: message }) }], isError: true };
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return { tools: TOOLS };
 });
@@ -111,100 +122,92 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "roblox_play": {
         const typedArgs = args as { waitForLoad?: boolean } | undefined;
         const result = await automation.play(typedArgs?.waitForLoad ?? true);
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        return result.success ? ok() : err(result.error || "Failed");
       }
 
       case "roblox_stop": {
         const result = await automation.stop();
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        return result.success ? ok() : err(result.error || "Failed");
       }
 
       case "roblox_execute": {
         const typedArgs = args as { script: string; timeout?: number };
-        const result = await automation.execute(typedArgs.script, typedArgs.timeout);
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        const result = await automation.execute(typedArgs.script, typedArgs.timeout) as { success: boolean; result?: unknown; error?: string; context?: string };
+        if (result.success) {
+          // Only include result and context, skip id/timestamp
+          return ok({ result: result.result, context: result.context });
+        }
+        return err(result.error || "Execution failed");
       }
 
       case "roblox_screenshot": {
         const typedArgs = args as { filename?: string; studioOnly?: boolean } | undefined;
+        // Don't return base64 - just save file and return path
         const result = await captureScreenshot({
           filename: typedArgs?.filename,
           studioOnly: typedArgs?.studioOnly ?? true,
-          returnBase64: true
+          returnBase64: false  // Don't include base64 to save tokens
         });
 
-        if (result.success && result.base64) {
-          return {
-            content: [
-              { type: "text", text: `Screenshot saved to: ${result.path}` },
-              { type: "image", data: result.base64, mimeType: "image/png" }
-            ]
-          };
+        if (result.success) {
+          return ok({ path: result.path });
         }
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        return err(result.error || "Screenshot failed");
       }
 
       case "roblox_get_state": {
         const state = await automation.getState();
-        return { content: [{ type: "text", text: JSON.stringify(state) }] };
+        // Return minimal state info
+        return ok({
+          isPlaying: state.isPlaying,
+          isStudio: state.isStudio
+        });
       }
 
       case "roblox_ping": {
         const result = await automation.ping();
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        return result.success ? ok() : err(result.error || "Plugin not responding");
       }
 
       case "roblox_focus": {
         const result = await automation.sendStudioControl('focus');
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
+        return result.success ? ok() : err(result.error || "Failed to focus");
       }
 
       case "roblox_test_scenario": {
         const typedArgs = args as { setupScript?: string; testScript?: string; waitSeconds?: number } | undefined;
-        const results: string[] = [];
+        const steps: string[] = [];
 
         // Start play mode
-        results.push("Starting play mode...");
         await automation.play(true);
+        steps.push("play:ok");
         await new Promise(r => setTimeout(r, 2000));
 
         // Run setup script if provided
         if (typedArgs?.setupScript) {
-          results.push("Running setup script...");
           const setupResult = await automation.execute(typedArgs.setupScript);
-          results.push(`Setup result: ${JSON.stringify(setupResult)}`);
+          steps.push(setupResult.success ? "setup:ok" : `setup:err`);
         }
 
         // Run test script if provided
         if (typedArgs?.testScript) {
-          results.push("Running test script...");
           const testResult = await automation.execute(typedArgs.testScript);
-          results.push(`Test result: ${JSON.stringify(testResult)}`);
+          steps.push(testResult.success ? "test:ok" : `test:err`);
         }
 
         // Wait
         const waitTime = (typedArgs?.waitSeconds ?? 2) * 1000;
-        results.push(`Waiting ${waitTime}ms...`);
         await new Promise(r => setTimeout(r, waitTime));
 
-        // Screenshot
-        results.push("Capturing screenshot...");
-        const screenshot = await captureScreenshot({ studioOnly: true, returnBase64: true });
+        // Screenshot (no base64)
+        const screenshot = await captureScreenshot({ studioOnly: true, returnBase64: false });
+        steps.push(screenshot.success ? "screenshot:ok" : "screenshot:err");
 
         // Stop
-        results.push("Stopping play mode...");
         await automation.stop();
+        steps.push("stop:ok");
 
-        if (screenshot.success && screenshot.base64) {
-          return {
-            content: [
-              { type: "text", text: results.join("\n") },
-              { type: "image", data: screenshot.base64, mimeType: "image/png" }
-            ]
-          };
-        }
-
-        return { content: [{ type: "text", text: results.join("\n") + "\n\nScreenshot failed: " + screenshot.error }] };
+        return ok({ steps: steps.join(","), screenshotPath: screenshot.path });
       }
 
       case "roblox_reload_plugins": {
@@ -213,21 +216,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           verify: typedArgs?.verify ?? true,
         });
 
-        return {
-          content: [{
-            type: "text",
-            text: result.success
-              ? `Plugins reloaded (${result.durationMs}ms)`
-              : `Reload failed: ${result.error}`
-          }]
-        };
+        if (result.success) {
+          return { content: [{ type: "text", text: `Plugins reloaded (${result.durationMs}ms)` }] };
+        }
+        return err(result.error || "Reload failed");
       }
 
       default:
-        return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+        return err(`Unknown tool: ${name}`);
     }
   } catch (e) {
-    return { content: [{ type: "text", text: `Error: ${(e as Error).message}` }], isError: true };
+    return err((e as Error).message);
   }
 });
 
