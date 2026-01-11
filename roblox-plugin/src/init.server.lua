@@ -28,6 +28,7 @@ local Config = {
 Config.COMMAND_URL = Config.SERVER_URL .. "/command"
 Config.RESPONSE_URL = Config.SERVER_URL .. "/response"
 Config.PING_URL = Config.SERVER_URL .. "/ping"
+Config.STATE_URL = Config.SERVER_URL .. "/state"
 
 --------------------------------------------------------------------------------
 -- CONTEXT DETECTION
@@ -116,7 +117,9 @@ local IPC = {}
 
 function IPC.readCommand()
     local success, result = pcall(function()
-        local response = HttpService:GetAsync(Config.COMMAND_URL)
+        -- Pass context in query string so server only delivers commands for this context
+        local url = Config.COMMAND_URL .. "?context=" .. Context.suffix
+        local response = HttpService:GetAsync(url)
         if response and response ~= "" then
             debug("Received command: " .. response:sub(1, 100))
             return HttpService:JSONDecode(response)
@@ -181,6 +184,27 @@ function IPC.checkConnection()
         return false
     end)
     return success and result
+end
+
+function IPC.reportState(isPlaying)
+    local success, err = pcall(function()
+        local state = {
+            isPlaying = isPlaying,
+            context = Context.suffix,
+            timestamp = os.time() * 1000
+        }
+        HttpService:PostAsync(
+            Config.STATE_URL,
+            HttpService:JSONEncode(state),
+            Enum.HttpContentType.ApplicationJson,
+            false
+        )
+    end)
+    if success then
+        debug("Reported state: isPlaying=" .. tostring(isPlaying))
+    else
+        debug("Failed to report state: " .. tostring(err))
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -415,23 +439,35 @@ else
     log("MCP server not available - will retry")
 end
 
+-- Report state changes to server (helps server route commands correctly)
+local lastReportedRunning = RunService:IsRunning()
+spawn(function()
+    -- Report initial state
+    IPC.reportState(lastReportedRunning)
+
+    -- Poll for state changes (IsRunning doesn't have a Changed event)
+    while true do
+        local isRunning = RunService:IsRunning()
+        if isRunning ~= lastReportedRunning then
+            log("Game state changed: isPlaying=" .. tostring(isRunning))
+            IPC.reportState(isRunning)
+            lastReportedRunning = isRunning
+        end
+        wait(0.5)
+    end
+end)
+
 -- Main polling loop
 spawn(function()
-    local lastConnectionWarning = 0
-
     while true do
-        -- Only poll if we should handle commands in this context
+        -- Server only delivers commands meant for this context (via ?context= param)
         local command = IPC.readCommand()
 
         if command then
-            if shouldHandleCommand(command) then
-                debug("Processing command: " .. command.action)
-                local response = handleCommand(command)
-                IPC.writeResponse(response)
-                log("Completed: " .. command.action)
-            else
-                debug("Skipping command (wrong context): " .. command.action)
-            end
+            debug("Processing command: " .. command.action)
+            local response = handleCommand(command)
+            IPC.writeResponse(response)
+            log("Completed: " .. command.action)
         end
 
         wait(Config.POLL_INTERVAL)
