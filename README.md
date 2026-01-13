@@ -21,46 +21,79 @@ An MCP (Model Context Protocol) server that enables Claude Code to automate Robl
 
 ## Quick Start
 
-### 1. Install the Plugin
+### 1. Clone and Build
 
 ```bash
+git clone https://github.com/cynisca/roblox-mcp.git
+cd roblox-mcp/roblox-test-mcp
+npm install
+npm run build
+```
+
+### 2. Install the Roblox Plugin
+
+```bash
+cd ..
 ./roblox-plugin/install.sh
 ```
 
 This copies the plugin to `~/Documents/Roblox/Plugins/`.
 
-### 2. Configure Claude Code
+### 3. Configure Claude Code MCP
 
-Add to your Claude Code MCP settings (`~/.claude/settings.json`):
+Add the MCP server to your Claude Code settings:
+
+**Option A: Via Claude Code CLI**
+```bash
+claude mcp add roblox-test node /absolute/path/to/roblox-mcp/roblox-test-mcp/dist/index.js
+```
+
+**Option B: Manual Configuration**
+
+Edit `~/.claude/settings.json`:
 
 ```json
 {
   "mcpServers": {
     "roblox-test": {
       "command": "node",
-      "args": ["/path/to/roblox-mcp/roblox-test-mcp/dist/index.js"]
+      "args": ["/absolute/path/to/roblox-mcp/roblox-test-mcp/dist/index.js"]
     }
   }
 }
 ```
 
-### 3. Build the MCP Server
+> **Important**: Use the absolute path to `dist/index.js`. Example:
+> `/Users/yourname/roblox-mcp/roblox-test-mcp/dist/index.js`
 
-```bash
-cd roblox-test-mcp
-npm install
-npm run build
-```
+### 4. Restart Claude Code
 
-### 4. Open Roblox Studio
+After adding the MCP configuration, restart Claude Code for the tools to be available.
+
+### 5. Configure Roblox Studio
 
 1. Open a place file in Roblox Studio
-2. Enable HTTP requests: **Game Settings → Security → Allow HTTP Requests**
-3. Enable LoadString: **ServerScriptService → Properties → LoadStringEnabled = true**
+2. Enable HTTP requests: **Home → Game Settings → Security → Allow HTTP Requests**
+3. Enable LoadString (required for script execution):
+   - Select **ServerScriptService** in Explorer
+   - In Properties panel, check **LoadStringEnabled**
 4. Check Output window for `[RTA-Edit] Plugin initialized`
 
-### 5. Verify Setup
+### 6. Grant Accessibility Permission (macOS)
 
+For keyboard automation (F5/Shift+F5):
+
+1. Open **System Preferences → Security & Privacy → Privacy → Accessibility**
+2. Add your terminal app (Terminal, iTerm2, VS Code, Cursor, etc.)
+
+### 7. Verify Setup
+
+In Claude Code, ask Claude to run:
+```
+Use roblox_ping to check if the plugin is connected
+```
+
+Or verify via terminal:
 ```bash
 cd roblox-test-mcp
 npm run setup:verify
