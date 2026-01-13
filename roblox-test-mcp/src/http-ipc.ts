@@ -1,8 +1,35 @@
 import http from 'http';
 import { v4 as uuidv4 } from 'uuid';
+import { execSync } from 'child_process';
 
 const PORT = 28859; // Arbitrary port for Roblox plugin communication
 const DEBUG = true; // Enable debug logging
+
+/**
+ * Kill any existing process using our port.
+ * This handles the case where Claude Code restarts but old MCP server is still running.
+ */
+function killExistingPortProcess(): void {
+  try {
+    // Find process using the port (macOS/Linux)
+    const result = execSync(`lsof -ti:${PORT} 2>/dev/null || true`, { encoding: 'utf8' }).trim();
+    if (result) {
+      const pids = result.split('\n').filter(p => p);
+      for (const pid of pids) {
+        try {
+          console.error(`[HTTP-IPC] Killing existing process ${pid} on port ${PORT}`);
+          execSync(`kill -9 ${pid} 2>/dev/null || true`);
+        } catch {
+          // Ignore errors killing individual processes
+        }
+      }
+      // Brief pause to let port be released
+      execSync('sleep 0.5');
+    }
+  } catch {
+    // Ignore errors - we'll find out when we try to bind
+  }
+}
 
 export interface Command {
   id: string;
@@ -68,6 +95,9 @@ export function startHttpServer(): Promise<void> {
       resolve();
       return;
     }
+
+    // Kill any zombie processes from previous MCP server instances
+    killExistingPortProcess();
 
     server = http.createServer((req, res) => {
       // Enable CORS for Roblox HttpService
@@ -228,8 +258,10 @@ export function startHttpServer(): Promise<void> {
 
     server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`Port ${PORT} is already in use. HTTP IPC server not started.`);
-        resolve(); // Don't fail, just continue without HTTP server
+        const errorMsg = `FATAL: Port ${PORT} is still in use after cleanup attempt. ` +
+          `Run 'lsof -ti:${PORT} | xargs kill -9' manually and restart Claude Code.`;
+        console.error(`[HTTP-IPC] ${errorMsg}`);
+        reject(new Error(errorMsg));
       } else {
         reject(err);
       }
