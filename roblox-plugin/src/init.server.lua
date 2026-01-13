@@ -55,20 +55,41 @@ else
 end
 
 --------------------------------------------------------------------------------
--- LOGGING
+-- LOGGING WITH BUFFER (for token-efficient log retrieval)
 --------------------------------------------------------------------------------
+local LogBuffer = {}  -- Circular buffer for recent logs
+local LOG_BUFFER_SIZE = 50
+
+local function addToLogBuffer(level, message)
+    table.insert(LogBuffer, {
+        t = os.time(),
+        l = level,
+        m = message
+    })
+    if #LogBuffer > LOG_BUFFER_SIZE then
+        table.remove(LogBuffer, 1)
+    end
+end
+
 local function log(message)
-    print(string.format("[RTA-%s] %s", Context.suffix, message))
+    local formatted = string.format("[RTA-%s] %s", Context.suffix, message)
+    addToLogBuffer("INFO", formatted)
+    print(formatted)
 end
 
 local function debug(message)
     if Config.DEBUG then
-        print(string.format("[RTA-%s] [DEBUG] %s", Context.suffix, message))
+        local formatted = string.format("[RTA-%s] [DEBUG] %s", Context.suffix, message)
+        addToLogBuffer("DEBUG", formatted)
+        print(formatted)
     end
 end
 
-local function warn(message)
-    warn(string.format("[RTA-%s] %s", Context.suffix, message))
+local globalWarn = warn
+local function logWarn(message)
+    local formatted = string.format("[RTA-%s] %s", Context.suffix, message)
+    addToLogBuffer("WARN", formatted)
+    globalWarn(formatted)
 end
 
 --------------------------------------------------------------------------------
@@ -169,7 +190,7 @@ function IPC.writeResponse(response)
         debug("Response sent successfully")
         return true
     else
-        warn("Failed to send response: " .. tostring(result))
+        logWarn("Failed to send response: " .. tostring(result))
         return false
     end
 end
@@ -336,6 +357,78 @@ function Commands.execute(payload)
     end
 end
 
+-- Token-efficient log retrieval (avoids screenshots for debugging)
+function Commands.getLogs(payload)
+    local count = (payload and payload.count) or 20
+    local recent = {}
+    local startIdx = math.max(1, #LogBuffer - count + 1)
+    for i = startIdx, #LogBuffer do
+        table.insert(recent, LogBuffer[i])
+    end
+    return { success = true, result = recent }
+end
+
+-- Comprehensive game state snapshot (single call vs multiple)
+function Commands.getFullState(payload)
+    local result = {
+        -- Context info
+        context = Context.suffix,
+        isPlaying = RunService:IsRunning(),
+        isStudio = RunService:IsStudio(),
+    }
+
+    -- Player info
+    local players = Players:GetPlayers()
+    result.playerCount = #players
+
+    if #players > 0 then
+        local player = players[1]
+        result.playerName = player.Name
+
+        -- Character state
+        if player.Character then
+            local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+            local hum = player.Character:FindFirstChild("Humanoid")
+
+            if hrp then
+                result.playerPos = {
+                    x = math.floor(hrp.Position.X * 10) / 10,
+                    y = math.floor(hrp.Position.Y * 10) / 10,
+                    z = math.floor(hrp.Position.Z * 10) / 10
+                }
+                result.playerVelocity = {
+                    x = math.floor(hrp.Velocity.X * 10) / 10,
+                    y = math.floor(hrp.Velocity.Y * 10) / 10,
+                    z = math.floor(hrp.Velocity.Z * 10) / 10
+                }
+            end
+
+            if hum then
+                result.health = hum.Health
+                result.maxHealth = hum.MaxHealth
+                result.walkSpeed = hum.WalkSpeed
+            end
+        end
+
+        -- Leaderstats
+        if player:FindFirstChild("leaderstats") then
+            result.stats = {}
+            for _, stat in ipairs(player.leaderstats:GetChildren()) do
+                result.stats[stat.Name] = stat.Value
+            end
+        end
+    end
+
+    -- Recent logs (last 5 for quick overview)
+    result.recentLogs = {}
+    local logStart = math.max(1, #LogBuffer - 4)
+    for i = logStart, #LogBuffer do
+        table.insert(result.recentLogs, LogBuffer[i].m)
+    end
+
+    return { success = true, result = result }
+end
+
 --------------------------------------------------------------------------------
 -- CONTEXT-AWARE COMMAND ROUTING
 --------------------------------------------------------------------------------
@@ -356,6 +449,8 @@ local ANY_CONTEXT_COMMANDS = {
     ping = true,
     diagnostics = true,
     getState = true,
+    getLogs = true,
+    getFullState = true,
 }
 
 local function shouldHandleCommand(command)
@@ -427,8 +522,8 @@ log("Plugin loading...")
 -- Auto-configure settings
 local issues = autoConfigureSettings()
 if #issues > 0 then
-    warn("Configuration issues: " .. table.concat(issues, ", "))
-    warn("Some features may not work correctly.")
+    logWarn("Configuration issues: " .. table.concat(issues, ", "))
+    logWarn("Some features may not work correctly.")
 end
 
 -- Check initial connection
@@ -459,7 +554,15 @@ end)
 
 -- Main polling loop
 spawn(function()
+    local pollCount = 0
     while true do
+        pollCount = pollCount + 1
+
+        -- Log heartbeat every 50 polls (~5 seconds)
+        if pollCount % 50 == 0 then
+            debug("Polling heartbeat: " .. pollCount .. " polls")
+        end
+
         -- Server only delivers commands meant for this context (via ?context= param)
         local command = IPC.readCommand()
 
@@ -494,11 +597,11 @@ if Context.isEdit and plugin then
         if connected then
             log("MCP Server: Connected")
         else
-            warn("MCP Server: Not connected")
+            logWarn("MCP Server: Not connected")
         end
 
         if #ConfigurationIssues > 0 then
-            warn("Issues: " .. table.concat(ConfigurationIssues, ", "))
+            logWarn("Issues: " .. table.concat(ConfigurationIssues, ", "))
         else
             log("No configuration issues")
         end

@@ -52,7 +52,13 @@ const TOOLS = [
       type: "object" as const,
       properties: {
         filename: { type: "string", description: "Output filename" },
-        studioOnly: { type: "boolean", description: "Capture only Studio window", default: true }
+        studioOnly: { type: "boolean", description: "Capture only Studio window", default: true },
+        compression: {
+          type: "string",
+          description: "Compression level: none (PNG ~2MB), low (JPEG ~600KB), medium (JPEG ~150KB), high (JPEG ~80KB)",
+          enum: ["none", "low", "medium", "high"],
+          default: "medium"
+        }
       }
     }
   },
@@ -96,6 +102,21 @@ const TOOLS = [
         }
       }
     }
+  },
+  {
+    name: "roblox_get_logs",
+    description: "Get recent plugin logs without screenshot. Token-efficient debugging.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        count: { type: "number", description: "Number of log entries (default 20)", default: 20 }
+      }
+    }
+  },
+  {
+    name: "roblox_get_full_state",
+    description: "Get comprehensive game state in one call: player pos, health, stats, recent logs. Token-efficient alternative to multiple queries.",
+    inputSchema: { type: "object" as const, properties: {} }
   }
 ];
 
@@ -141,16 +162,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "roblox_screenshot": {
-        const typedArgs = args as { filename?: string; studioOnly?: boolean } | undefined;
-        // Don't return base64 - just save file and return path
+        const typedArgs = args as { filename?: string; studioOnly?: boolean; compression?: 'none' | 'low' | 'medium' | 'high' } | undefined;
         const result = await captureScreenshot({
           filename: typedArgs?.filename,
           studioOnly: typedArgs?.studioOnly ?? true,
-          returnBase64: false  // Don't include base64 to save tokens
+          compression: typedArgs?.compression ?? 'medium',
+          returnBase64: false
         });
 
         if (result.success) {
-          return ok({ path: result.path });
+          return ok({ path: result.path, sizeKB: result.sizeKB });
         }
         return err(result.error || "Screenshot failed");
       }
@@ -220,6 +241,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: "text", text: `Plugins reloaded (${result.durationMs}ms)` }] };
         }
         return err(result.error || "Reload failed");
+      }
+
+      case "roblox_get_logs": {
+        const typedArgs = args as { count?: number } | undefined;
+        const result = await automation.getLogs(typedArgs?.count ?? 20);
+        if (result.success && result.result) {
+          // Return logs as compact array
+          return ok({ logs: result.result });
+        }
+        return err(result.error || "Failed to get logs");
+      }
+
+      case "roblox_get_full_state": {
+        const result = await automation.getFullState();
+        if (result.success && result.result) {
+          // Return the full state object directly
+          return { content: [{ type: "text", text: JSON.stringify(result.result) }] };
+        }
+        return err(result.error || "Failed to get state");
       }
 
       default:

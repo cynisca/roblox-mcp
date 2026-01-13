@@ -6,25 +6,33 @@ const PORT = 28859; // Arbitrary port for Roblox plugin communication
 const DEBUG = true; // Enable debug logging
 
 /**
- * Kill any existing process using our port.
+ * Kill any existing NODE process LISTENING on our port.
  * This handles the case where Claude Code restarts but old MCP server is still running.
+ * Important: Only kills node processes, not Roblox Studio (which has ESTABLISHED connections).
  */
 function killExistingPortProcess(): void {
   try {
-    // Find process using the port (macOS/Linux)
-    const result = execSync(`lsof -ti:${PORT} 2>/dev/null || true`, { encoding: 'utf8' }).trim();
+    // Find only LISTENING processes on the port, filter to node only
+    // lsof format: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+    const result = execSync(
+      `lsof -i:${PORT} -sTCP:LISTEN 2>/dev/null | grep -i node | awk '{print $2}' || true`,
+      { encoding: 'utf8' }
+    ).trim();
+
     if (result) {
-      const pids = result.split('\n').filter(p => p);
+      const pids = result.split('\n').filter(p => p && p !== 'PID');
       for (const pid of pids) {
         try {
-          console.error(`[HTTP-IPC] Killing existing process ${pid} on port ${PORT}`);
+          console.error(`[HTTP-IPC] Killing stale node process ${pid} listening on port ${PORT}`);
           execSync(`kill -9 ${pid} 2>/dev/null || true`);
         } catch {
           // Ignore errors killing individual processes
         }
       }
       // Brief pause to let port be released
-      execSync('sleep 0.5');
+      if (pids.length > 0) {
+        execSync('sleep 0.5');
+      }
     }
   } catch {
     // Ignore errors - we'll find out when we try to bind

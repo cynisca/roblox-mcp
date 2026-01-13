@@ -103,6 +103,24 @@ export class RobloxAutomation {
     }
   }
 
+  async getLogs(count = 20): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    try {
+      const response = await sendCommandHttp('getLogs', { count }, 5000);
+      return response;
+    } catch (e) {
+      return { success: false, error: (e as Error).message };
+    }
+  }
+
+  async getFullState(): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    try {
+      const response = await sendCommandHttp('getFullState', {}, 5000);
+      return response;
+    } catch (e) {
+      return { success: false, error: (e as Error).message };
+    }
+  }
+
   isHttpServerRunning(): boolean {
     return isHttpServerRunning();
   }
