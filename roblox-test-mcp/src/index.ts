@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { RobloxAutomation } from "./automation.js";
 import { captureScreenshot } from "./screenshot.js";
+import { captureSequence } from "./sequence-capture.js";
 import { ensureDirectories } from "./ipc.js";
 import { reloadPlugins } from "./ui-automation/plugin-reload.js";
 
@@ -117,6 +118,30 @@ const TOOLS = [
     name: "roblox_get_full_state",
     description: "Get comprehensive game state in one call: player pos, health, stats, recent logs. Token-efficient alternative to multiple queries.",
     inputSchema: { type: "object" as const, properties: {} }
+  },
+  {
+    name: "roblox_capture_sequence",
+    description: "Capture a sequence of screenshots and stitch into a single image. Great for gameplay progression.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        frames: { type: "number", description: "Number of frames (2-16, default: 6)", default: 6 },
+        interval: { type: "number", description: "Ms between frames (100-10000, default: 1000)", default: 1000 },
+        layout: {
+          type: "string",
+          description: "Layout: horizontal, vertical, grid, or auto",
+          enum: ["horizontal", "vertical", "grid", "auto"],
+          default: "auto"
+        },
+        compression: {
+          type: "string",
+          description: "Compression: none, low, medium, high",
+          enum: ["none", "low", "medium", "high"],
+          default: "high"
+        },
+        labels: { type: "boolean", description: "Add frame numbers (default: true)", default: true }
+      }
+    }
   }
 ];
 
@@ -260,6 +285,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: "text", text: JSON.stringify(result.result) }] };
         }
         return err(result.error || "Failed to get state");
+      }
+
+      case "roblox_capture_sequence": {
+        const typedArgs = args as {
+          frames?: number;
+          interval?: number;
+          layout?: 'horizontal' | 'vertical' | 'grid' | 'auto';
+          compression?: 'none' | 'low' | 'medium' | 'high';
+          labels?: boolean;
+        } | undefined;
+
+        const result = await captureSequence({
+          frames: typedArgs?.frames ?? 6,
+          interval: typedArgs?.interval ?? 1000,
+          layout: typedArgs?.layout ?? 'auto',
+          compression: typedArgs?.compression ?? 'high',
+          labels: typedArgs?.labels ?? true
+        });
+
+        if (result.success) {
+          return ok({
+            path: result.path,
+            sizeKB: result.sizeKB,
+            frames: result.frames,
+            layout: result.layout,
+            duration: result.totalDuration
+          });
+        }
+        return err(result.error || "Sequence capture failed");
       }
 
       default:

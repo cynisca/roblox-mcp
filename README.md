@@ -109,6 +109,7 @@ npm run setup:verify
 | `roblox_stop` | Stop play-testing mode (Shift+F5) |
 | `roblox_execute` | Execute Lua script in game context |
 | `roblox_screenshot` | Capture screenshot (with compression) |
+| `roblox_capture_sequence` | Capture multiple frames stitched into one image |
 | `roblox_test_scenario` | Run complete test flow |
 
 ### Token-Efficient Tools
@@ -142,6 +143,32 @@ The `roblox_screenshot` tool supports compression levels:
 // Example: high compression
 { "compression": "high" }
 ```
+
+### Sequence Capture
+
+Capture gameplay progression as a single stitched image:
+
+```json
+{
+  "frames": 6,        // 2-16 frames
+  "interval": 1000,   // ms between frames
+  "layout": "auto",   // horizontal, vertical, grid, auto
+  "compression": "high",
+  "labels": true      // add frame numbers
+}
+```
+
+**Layout options:**
+
+| Frames | Auto Layout |
+|--------|-------------|
+| 1-3 | Horizontal strip |
+| 4 | 2x2 grid |
+| 5-6 | 3x2 grid |
+| 7-9 | 3x3 grid |
+| 10-12 | 4x3 grid |
+
+**Example output:** 6 frames over 5 seconds → ~250KB stitched image with frame numbers.
 
 ## Architecture
 
