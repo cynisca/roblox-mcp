@@ -6,7 +6,8 @@ An MCP (Model Context Protocol) server that enables Claude Code to automate Robl
 
 - **Play/Stop Control**: Start and stop play-testing mode via keystrokes
 - **Script Execution**: Run Lua scripts in the game context and get results
-- **Screenshot Capture**: Capture screenshots of Roblox Studio
+- **Screenshot Capture**: Compressed screenshots (95% smaller than raw PNG)
+- **Token-Efficient**: Get logs and game state without expensive screenshots
 - **Plugin Reload**: Automatically reload plugins after code changes
 - **Self-Healing**: Auto-detects and reports configuration issues
 - **Context-Aware**: Routes commands to appropriate context (Edit/Server/Client)
@@ -67,17 +68,47 @@ npm run setup:verify
 
 ## MCP Tools
 
+### Core Tools
+
 | Tool | Description |
 |------|-------------|
-| `roblox_ping` | Check if plugin is responding |
-| `roblox_get_state` | Get current state (playing, edit mode, context) |
-| `roblox_focus` | Bring Roblox Studio to foreground |
 | `roblox_play` | Start play-testing mode (F5) |
 | `roblox_stop` | Stop play-testing mode (Shift+F5) |
 | `roblox_execute` | Execute Lua script in game context |
-| `roblox_screenshot` | Capture screenshot of Studio |
-| `roblox_test_scenario` | Run complete test flow with setup/test/screenshot |
-| `roblox_reload_plugins` | Reload plugins via File menu (~3-5s) |
+| `roblox_screenshot` | Capture screenshot (with compression) |
+| `roblox_test_scenario` | Run complete test flow |
+
+### Token-Efficient Tools
+
+| Tool | Description | Token Savings |
+|------|-------------|---------------|
+| `roblox_get_full_state` | Player pos, health, stats, logs in one call | ~70% vs multiple calls |
+| `roblox_get_logs` | Get plugin logs without screenshot | ~93% vs screenshot |
+| `roblox_get_state` | Basic state (playing, context) | - |
+| `roblox_ping` | Check plugin connection | - |
+
+### Utility Tools
+
+| Tool | Description |
+|------|-------------|
+| `roblox_focus` | Bring Studio to foreground |
+| `roblox_reload_plugins` | Reload plugins (~3-5s) |
+
+### Screenshot Compression
+
+The `roblox_screenshot` tool supports compression levels:
+
+| Level | Size | Use Case |
+|-------|------|----------|
+| `none` | ~2 MB | Pixel-perfect archival |
+| `low` | ~600 KB | High quality |
+| `medium` | ~100 KB | **Default** - good balance |
+| `high` | ~80 KB | Maximum compression |
+
+```json
+// Example: high compression
+{ "compression": "high" }
+```
 
 ## Architecture
 
@@ -111,14 +142,42 @@ npm run setup:verify
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Token-Efficient Usage
+
+For cost-effective automation, prefer these patterns:
+
+```typescript
+// ❌ Expensive: Screenshot to check game state
+roblox_screenshot()  // ~1500 tokens for image
+
+// ✅ Efficient: Structured state query
+roblox_get_full_state()  // ~150 tokens
+// Returns: { playerPos, health, stats, recentLogs, isPlaying, ... }
+
+// ❌ Expensive: Screenshot to read Output window
+roblox_screenshot()  // ~1500 tokens
+
+// ✅ Efficient: Direct log retrieval
+roblox_get_logs({ count: 10 })  // ~100 tokens
+// Returns: [{ t: timestamp, l: level, m: message }, ...]
+
+// ❌ Expensive: Multiple execute calls
+roblox_execute("return player.Position")
+roblox_execute("return player.Health")
+roblox_execute("return leaderstats.BestTime.Value")
+
+// ✅ Efficient: Single comprehensive call
+roblox_get_full_state()  // All in one response
+```
+
 ## Context-Aware Command Routing
 
 The plugin runs in multiple contexts during play mode. Commands are routed appropriately:
 
 | Context | When Active | Handles |
 |---------|-------------|---------|
-| **Edit** | Always in edit mode | ping, getState, diagnostics |
-| **Server** | During play mode | execute, getState |
+| **Edit** | Always in edit mode | ping, getState, getLogs, getFullState |
+| **Server** | During play mode | execute, getState, getLogs, getFullState |
 | **Client** | During play mode | (HTTP disabled by Roblox) |
 
 This ensures commands are handled by the correct context and prevents duplicate responses.
